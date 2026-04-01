@@ -111,7 +111,7 @@ with st.sidebar:
     sub_choice = sub_mode_map[sub_mode]
     sub_lang = st.text_input("자막 언어", value="ko", help="예: ko,en,ja 또는 all")
     output_format = st.selectbox("자막 파일 포맷", ["txt", "srt", "vtt", "docx"])
-    run_btn = st.button("수집 시작", type="primary", width="stretch")
+    run_btn = st.button("수집 시작", type="primary", use_container_width=True)
 
 # ============================================================
 # 세션 상태 초기화 + 유효성 검증
@@ -401,7 +401,7 @@ if st.session_state.collected:
                     'view_count', 'like_count', 'subtitle_collected_langs']
     display_cols = [c for c in display_cols if c in df.columns]
 
-    st.dataframe(df[display_cols], width="stretch", height=400)
+    st.dataframe(df[display_cols], use_container_width=True, height=400)
 
     st.subheader("다운로드")
     d1, d2, d3 = st.columns(3)
