@@ -57,7 +57,7 @@ def format_duration(seconds):
 
 
 def read_subtitle_files(video_id, subtitle_dir, ext):
-    pattern = os.path.join(subtitle_dir, f"{video_id}.*.{ext}")
+    pattern = os.path.join(subtitle_dir, f"{video_id}*.{ext}")
     sub_files = glob.glob(pattern)
     result = {}
     for fpath in sub_files:
