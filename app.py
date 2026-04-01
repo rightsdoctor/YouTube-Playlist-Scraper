@@ -94,7 +94,7 @@ with st.sidebar:
     }
     sub_choice = sub_mode_map[sub_mode]
     sub_lang = st.text_input("자막 언어", value="ko", help="예: ko,en,ja 또는 all")
-    output_format = st.selectbox("자막 파일 포맷", ["srt", "vtt", "txt", "docx"])
+    output_format = st.selectbox("자막 파일 포맷", ["txt", "srt", "vtt", "docx"])
     run_btn = st.button("수집 시작", type="primary", use_container_width=True)
 
 # ============================================================
