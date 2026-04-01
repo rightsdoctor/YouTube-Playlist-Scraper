@@ -111,21 +111,20 @@ with st.sidebar:
     sub_choice = sub_mode_map[sub_mode]
     sub_lang = st.text_input("자막 언어", value="ko", help="예: ko,en,ja 또는 all")
     output_format = st.selectbox("자막 파일 포맷", ["txt", "srt", "vtt", "docx"])
-    run_btn = st.button("수집 시작", type="primary", use_container_width=True)
+    run_btn = st.button("수집 시작", type="primary", width="stretch")
 
 # ============================================================
-# 세션 상태 초기화
+# 세션 상태 초기화 + 유효성 검증
 # ============================================================
 if 'collected' not in st.session_state:
     st.session_state.collected = False
 
-# ============================================================
-# 메인 실행
-# ============================================================
-if run_btn and playlist_url:
-
-    # ★ 새 수집 시작 시 이전 결과 초기화
-    st.session_state.collected = False
+# ★ 이전 세션의 손상된 데이터 방어
+if st.session_state.collected:
+    if not hasattr(st.session_state, 'df') or not isinstance(st.session_state.get('df'), pd.DataFrame):
+        st.session_state.collected = False
+    elif 'subtitle_collected_langs' not in st.session_state.df.columns:
+        st.session_state.collected = False
 
     for d in [SUBTITLE_DIR, CONVERTED_DIR]:
         if os.path.exists(d):
@@ -402,7 +401,7 @@ if st.session_state.collected:
                     'view_count', 'like_count', 'subtitle_collected_langs']
     display_cols = [c for c in display_cols if c in df.columns]
 
-    st.dataframe(df[display_cols], use_container_width=True, height=400)
+    st.dataframe(df[display_cols], width="stretch", height=400)
 
     st.subheader("다운로드")
     d1, d2, d3 = st.columns(3)
