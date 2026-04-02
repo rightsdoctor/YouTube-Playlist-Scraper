@@ -388,7 +388,7 @@ if run_btn and playlist_url:
             return entry, error_info
 
         # ── 병렬 실행 ──
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             futures = {
                 executor.submit(process_video, idx, vid): (idx, vid)
                 for idx, vid in enumerate(video_ids, 1)
