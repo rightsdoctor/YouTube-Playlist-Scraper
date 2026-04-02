@@ -516,7 +516,7 @@ if run_btn and playlist_url:
                     (e for e in full_entries if e.get('id') == vid_key), {}
                 )
                 title = matched_entry.get('title', vid_key)
-                safe_name = re.sub(r'[^\w가-힣\s]', '', title)[:50].strip()
+                safe_name = re.sub(r'[^\w가-힣\s]', '', title)[:30].strip()
 
                 if output_format == "txt":
                     out_path = os.path.join(CONVERTED_DIR, f"{vid_key}_{safe_name}.txt")
