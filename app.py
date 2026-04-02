@@ -261,7 +261,54 @@ if run_btn and playlist_url:
         if not video_ids:
             st.error("영상을 찾을 수 없습니다. URL을 확인하세요.")
             st.stop()
+        
+        # ══════════════════════════════════════════════════════
+        # ★ 1.5단계: 연결 테스트 (첫 번째 영상으로 봇 차단 사전 감지)
+        # ══════════════════════════════════════════════════════
+        st.write("YouTube 연결 테스트 중...")
+        test_vid = video_ids[0]
+        test_url = f"https://www.youtube.com/watch?v={test_vid}"
+        test_stdout, test_stderr, test_code = run_cmd(
+            ["yt-dlp", "--skip-download", "--dump-json",
+             "--no-warnings", "--ignore-errors", test_url],
+            timeout=30,
+        )
 
+        if test_stdout.strip():
+            st.write("연결 확인 ✓")
+        else:
+            # 봇 차단 키워드 감지
+            bot_keywords = ["Sign in", "bot", "confirm", "not a bot"]
+            is_bot_block = any(kw.lower() in test_stderr.lower() for kw in bot_keywords)
+
+            if is_bot_block:
+                st.error(
+                    "🚫 **YouTube가 이 네트워크의 접근을 차단하고 있습니다.**\n\n"
+                    "데이터센터 IP(클라우드 서버)에서는 YouTube가 봇으로 판정하여 "
+                    "메타데이터 요청 자체를 거부합니다.\n\n"
+                    "**해결 방법: 로컬 PC에서 실행**\n"
+                    "```\n"
+                    "pip install streamlit yt-dlp pandas openpyxl python-docx\n"
+                    "streamlit run app.py\n"
+                    "```\n"
+                    "가정용 Wi-Fi에 연결된 PC에서 위 명령을 실행하면 "
+                    "봇 차단 없이 정상 동작합니다.\n\n"
+                    "VPN 사용 중이라면 VPN을 끄고 다시 시도하세요."
+                )
+                with st.expander("yt-dlp 에러 상세"):
+                    st.code(test_stderr[:1000])
+                status.update(label="YouTube 봇 차단으로 중단", state="error")
+                st.stop()
+            else:
+                st.error(
+                    f"첫 번째 영상 메타데이터 수집 실패 (code={test_code})\n\n"
+                    f"URL이 올바른지, 영상이 비공개/삭제 상태가 아닌지 확인하세요."
+                )
+                with st.expander("yt-dlp 에러 상세"):
+                    st.code(test_stderr[:1000] if test_stderr else "(출력 없음)")
+                # 첫 영상만 실패일 수 있으므로 완전 중단하지 않고 경고만
+                st.warning("첫 번째 영상 테스트 실패. 나머지 영상으로 계속 진행합니다.")
+        
         # ── 2단계: 개별 영상 수집 ──
         st.write("개별 영상 메타데이터 + 자막 수집 중... (병렬 처리)")
         progress = st.progress(0)
