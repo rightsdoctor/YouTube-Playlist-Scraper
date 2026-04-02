@@ -7,6 +7,7 @@ import subprocess
 import shutil
 import zipfile
 import threading
+import time
 import base64
 import pandas as pd
 from datetime import datetime
@@ -88,15 +89,10 @@ def format_duration(seconds):
 
 
 def find_subtitle_files_for_video(video_id, subtitle_dir):
-    """
-    video_id에 정확히 매칭되는 자막 파일만 찾기.
-    파일명 형태: VIDEO_ID.LANG.EXT 또는 VIDEO_ID.EXT
-    """
     results = []
     if not os.path.exists(subtitle_dir):
         return results
     for fname in os.listdir(subtitle_dir):
-        # 파일명이 video_id로 시작하고, 바로 다음이 '.'인 경우만
         if fname.startswith(video_id + "."):
             fpath = os.path.join(subtitle_dir, fname)
             if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
@@ -105,17 +101,14 @@ def find_subtitle_files_for_video(video_id, subtitle_dir):
 
 
 def parse_subtitle_lang(filepath):
-    """파일 경로에서 언어 코드 추출"""
     fname = os.path.basename(filepath)
-    # VIDEO_ID.lang.ext → parts = [VIDEO_ID, lang, ext]
     parts = fname.rsplit('.', 2)
     if len(parts) == 3:
-        return parts[1]  # lang
+        return parts[1]
     return "unknown"
 
 
 def read_subtitles_for_video(video_id, subtitle_dir):
-    """video_id에 해당하는 모든 자막을 {lang: text} 딕셔너리로 반환"""
     result = {}
     for fpath in find_subtitle_files_for_video(video_id, subtitle_dir):
         lang = parse_subtitle_lang(fpath)
@@ -130,7 +123,6 @@ def read_subtitles_for_video(video_id, subtitle_dir):
 
 
 def count_videos_with_subs(subtitle_dir):
-    """자막 디렉토리에서 고유 video_id 수"""
     vids = set()
     if not os.path.exists(subtitle_dir):
         return vids, 0
@@ -146,7 +138,6 @@ def count_videos_with_subs(subtitle_dir):
 
 
 def zip_directory_all(dir_path, ext):
-    """디렉토리에서 특정 확장자 파일들을 ZIP으로"""
     buf = BytesIO()
     matched = glob.glob(os.path.join(dir_path, f"*.{ext}"))
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -194,6 +185,26 @@ with st.sidebar:
     sub_lang = st.text_input("자막 언어", value="ko",
                              help="예: ko, en, ja 또는 all")
     output_format = st.selectbox("자막 파일 포맷", ["txt", "srt", "vtt", "docx"])
+
+    # ★ 속도 조절 옵션 추가
+    st.subheader("속도 조절")
+    workers = st.slider(
+        "동시 처리 수",
+        min_value=1, max_value=10, value=1,
+        help="1 = 순차 처리 (가장 안전), 높을수록 빠르지만 차단 위험 증가"
+    )
+    sleep_sec = st.slider(
+        "요청 간 대기 (초)",
+        min_value=0, max_value=15, value=3,
+        help="각 영상 처리 후 대기 시간. 3~5초 권장"
+    )
+    # ★ 연속 실패 시 자동 중단 임계값
+    max_consecutive_fails = st.slider(
+        "연속 실패 시 중단",
+        min_value=3, max_value=30, value=10,
+        help="연속으로 이 횟수만큼 실패하면 봇 차단으로 판단하고 수집을 중단합니다"
+    )
+
     run_btn = st.button("수집 시작", type="primary", use_container_width=True)
 
 # ============================================================
@@ -220,7 +231,7 @@ if run_btn and playlist_url:
     has_ffmpeg = check_ffmpeg()
 
     if not ytdlp_ok:
-        st.error("yt-dlp를 찾을 수 없습니다. requirements.txt에 yt-dlp를 추가하세요.")
+        st.error("yt-dlp를 찾을 수 없습니다. `pip install yt-dlp`를 실행하세요.")
         st.stop()
 
     if not has_ffmpeg:
@@ -255,15 +266,15 @@ if run_btn and playlist_url:
                     continue
 
         video_ids = [e.get('id') or e.get('url', '') for e in flat_entries]
-        video_ids = [v for v in video_ids if v]  # 빈 ID 제거
+        video_ids = [v for v in video_ids if v]
         st.write(f"**{len(video_ids)}개** 영상 감지")
 
         if not video_ids:
             st.error("영상을 찾을 수 없습니다. URL을 확인하세요.")
             st.stop()
-        
+
         # ══════════════════════════════════════════════════════
-        # ★ 1.5단계: 연결 테스트 (첫 번째 영상으로 봇 차단 사전 감지)
+        # ★ 1.5단계: 연결 테스트
         # ══════════════════════════════════════════════════════
         st.write("YouTube 연결 테스트 중...")
         test_vid = video_ids[0]
@@ -277,52 +288,60 @@ if run_btn and playlist_url:
         if test_stdout.strip():
             st.write("연결 확인 ✓")
         else:
-            # 봇 차단 키워드 감지
             bot_keywords = ["Sign in", "bot", "confirm", "not a bot"]
             is_bot_block = any(kw.lower() in test_stderr.lower() for kw in bot_keywords)
 
             if is_bot_block:
                 st.error(
                     "🚫 **YouTube가 이 네트워크의 접근을 차단하고 있습니다.**\n\n"
-                    "데이터센터 IP(클라우드 서버)에서는 YouTube가 봇으로 판정하여 "
-                    "메타데이터 요청 자체를 거부합니다.\n\n"
-                    "**해결 방법: 로컬 PC에서 실행**\n"
-                    "```\n"
-                    "pip install streamlit yt-dlp pandas openpyxl python-docx\n"
-                    "streamlit run app.py\n"
-                    "```\n"
-                    "가정용 Wi-Fi에 연결된 PC에서 위 명령을 실행하면 "
-                    "봇 차단 없이 정상 동작합니다.\n\n"
-                    "VPN 사용 중이라면 VPN을 끄고 다시 시도하세요."
+                    "**해결 방법:**\n"
+                    "- VPN을 사용 중이라면 끄고 다시 시도\n"
+                    "- 공유기를 껐다 켜서 IP 갱신 후 재시도\n"
+                    "- 1~2시간 후 재시도\n"
                 )
                 with st.expander("yt-dlp 에러 상세"):
                     st.code(test_stderr[:1000])
                 status.update(label="YouTube 봇 차단으로 중단", state="error")
                 st.stop()
             else:
-                st.error(
-                    f"첫 번째 영상 메타데이터 수집 실패 (code={test_code})\n\n"
-                    f"URL이 올바른지, 영상이 비공개/삭제 상태가 아닌지 확인하세요."
-                )
+                st.error(f"첫 번째 영상 메타데이터 수집 실패 (code={test_code})")
                 with st.expander("yt-dlp 에러 상세"):
                     st.code(test_stderr[:1000] if test_stderr else "(출력 없음)")
-                # 첫 영상만 실패일 수 있으므로 완전 중단하지 않고 경고만
                 st.warning("첫 번째 영상 테스트 실패. 나머지 영상으로 계속 진행합니다.")
-        
+
         # ── 2단계: 개별 영상 수집 ──
-        st.write("개별 영상 메타데이터 + 자막 수집 중... (병렬 처리)")
+        st.write(f"개별 영상 메타데이터 + 자막 수집 중... (workers={workers}, 대기={sleep_sec}초)")
         progress = st.progress(0)
+        status_text = st.empty()  # ★ 실시간 상태 표시용
         full_entries = []
         errors = []
         lock = threading.Lock()
         completed_count = 0
         total = len(video_ids)
 
+        # ★ 연속 실패 카운터 (봇 차단 조기 감지)
+        consecutive_fail_count = 0
+        abort_flag = False
+
         def process_video(idx, vid):
             """단일 영상 메타데이터 + 자막 수집"""
+            nonlocal consecutive_fail_count, abort_flag
+
+            # ★ 중단 플래그 확인
+            if abort_flag:
+                return None, {
+                    'position': idx, 'video_id': vid,
+                    'error': 'Aborted (봇 차단 감지로 중단)',
+                    'detail': ''
+                }
+
             url = f"https://www.youtube.com/watch?v={vid}"
             entry = None
             error_info = None
+
+            # ★ 요청 간 대기
+            if sleep_sec > 0:
+                time.sleep(sleep_sec)
 
             # ── 메타데이터 ──
             meta_stdout, meta_stderr, meta_code = run_cmd(
@@ -335,6 +354,11 @@ if run_btn and playlist_url:
                 try:
                     entry = json.loads(meta_stdout.strip().split('\n')[0])
                     entry['_playlist_position'] = idx
+
+                    # ★ 성공 시 연속 실패 카운터 리셋
+                    with lock:
+                        consecutive_fail_count = 0
+
                 except json.JSONDecodeError:
                     error_info = {
                         'position': idx, 'video_id': vid,
@@ -343,11 +367,22 @@ if run_btn and playlist_url:
                     }
                     return entry, error_info
             else:
+                # ★ 봇 차단 여부 확인
+                bot_keywords = ["Sign in", "bot", "confirm", "not a bot"]
+                is_bot = any(kw.lower() in meta_stderr.lower() for kw in bot_keywords)
+
                 error_info = {
                     'position': idx, 'video_id': vid,
                     'error': f"No metadata (code={meta_code})",
                     'detail': meta_stderr[:300]
                 }
+
+                if is_bot:
+                    with lock:
+                        consecutive_fail_count += 1
+                        if consecutive_fail_count >= max_consecutive_fails:
+                            abort_flag = True
+
                 return entry, error_info
 
             # ── 자막 ──
@@ -357,7 +392,6 @@ if run_btn and playlist_url:
                 "-o", os.path.join(SUBTITLE_DIR, "%(id)s.%(ext)s"),
             ]
 
-            # 자막 모드별 플래그
             if sub_choice == "manual_only":
                 sub_args += ["--write-subs", "--no-write-auto-subs"]
             elif sub_choice == "auto_only":
@@ -367,11 +401,9 @@ if run_btn and playlist_url:
             elif sub_choice == "both":
                 sub_args += ["--write-subs", "--write-auto-subs"]
 
-            # ffmpeg이 있으면 srt로 변환
             if has_ffmpeg:
                 sub_args += ["--convert-subs", "srt"]
 
-            # 언어 필터
             if sub_lang.lower().strip() == "all":
                 sub_args += ["--sub-langs", "all,-live_chat"]
             else:
@@ -387,8 +419,8 @@ if run_btn and playlist_url:
 
             return entry, error_info
 
-        # ── 병렬 실행 ──
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        # ── 병렬 실행 (★ workers 변수 사용) ──
+        with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(process_video, idx, vid): (idx, vid)
                 for idx, vid in enumerate(video_ids, 1)
@@ -409,8 +441,31 @@ if run_btn and playlist_url:
                     completed_count += 1
                     progress.progress(
                         completed_count / total,
-                        text=f"[{completed_count}/{total}] 완료"
+                        text=f"[{completed_count}/{total}] 성공 {len(full_entries)} / 실패 {len(errors)}"
                     )
+                    # ★ 실시간 상태 업데이트
+                    status_text.text(
+                        f"처리: {completed_count}/{total} | "
+                        f"성공: {len(full_entries)} | "
+                        f"실패: {len(errors)} | "
+                        f"연속실패: {consecutive_fail_count}"
+                    )
+
+                # ★ 중단 확인
+                if abort_flag:
+                    # 남은 future들 취소
+                    for f in futures:
+                        f.cancel()
+                    break
+
+        # ★ 봇 차단으로 중단된 경우 경고
+        if abort_flag:
+            st.warning(
+                f"⚠️ **연속 {max_consecutive_fails}회 봇 차단 감지 → 수집 조기 중단**\n\n"
+                f"성공한 **{len(full_entries)}개** 영상은 정상 처리됩니다.\n"
+                f"나머지 영상은 1~2시간 후 재시도하거나, 공유기를 재부팅하여 IP를 갱신하세요.\n\n"
+                f"**팁:** 사이드바에서 '대기 시간'을 5~10초로 늘리면 차단 확률이 줄어듭니다."
+            )
 
         full_entries.sort(key=lambda x: x.get('_playlist_position', 0))
         progress.progress(1.0, text="수집 완료!")
@@ -419,32 +474,28 @@ if run_btn and playlist_url:
         vids_with_subs, sub_file_count = count_videos_with_subs(SUBTITLE_DIR)
         st.write(f"자막 파일 **{sub_file_count}개** 수집됨 (영상 **{len(vids_with_subs)}개**)")
 
-        # ★ 0개일 때 디버그 정보
-        if sub_file_count == 0:
+        if sub_file_count == 0 and full_entries:
             all_files = os.listdir(SUBTITLE_DIR) if os.path.exists(SUBTITLE_DIR) else []
             if all_files:
                 st.warning(f"디렉토리에 파일 {len(all_files)}개 존재하나 크기 0:\n"
                            f"`{all_files[:5]}`")
-            # 첫 번째 성공 영상으로 자막 직접 테스트
-            if full_entries:
-                test_vid = full_entries[0].get('id', '')
-                test_url = f"https://www.youtube.com/watch?v={test_vid}"
-                test_args = [
-                    "yt-dlp", "--skip-download", "--write-auto-subs",
-                    "--sub-langs", "ko,ko-*,-live_chat",
-                    "--list-subs", test_url
-                ]
-                test_out, test_err, _ = run_cmd(test_args, timeout=30)
-                with st.expander("자막 디버그 (첫 번째 영상)"):
-                    st.code(test_out[:1000] if test_out else "(stdout 없음)")
-                    st.code(test_err[:1000] if test_err else "(stderr 없음)")
+            test_vid = full_entries[0].get('id', '')
+            test_url = f"https://www.youtube.com/watch?v={test_vid}"
+            test_args = [
+                "yt-dlp", "--skip-download", "--write-auto-subs",
+                "--sub-langs", "ko,ko-*,-live_chat",
+                "--list-subs", test_url
+            ]
+            test_out, test_err, _ = run_cmd(test_args, timeout=30)
+            with st.expander("자막 디버그 (첫 번째 영상)"):
+                st.code(test_out[:1000] if test_out else "(stdout 없음)")
+                st.code(test_err[:1000] if test_err else "(stderr 없음)")
 
-        # ── 3단계: 포맷 변환 (txt/docx) ──
+        # ── 3단계: 포맷 변환 ──
         final_sub_dir = SUBTITLE_DIR
         final_sub_ext = "srt" if has_ffmpeg else "vtt"
         converted_count = 0
 
-        # 실제 존재하는 자막 파일의 확장자 파악
         actual_sub_files = []
         for fname in os.listdir(SUBTITLE_DIR):
             fpath = os.path.join(SUBTITLE_DIR, fname)
@@ -459,7 +510,6 @@ if run_btn and playlist_url:
                 from docx import Document
                 from docx.shared import Pt
 
-            # 영상별 그룹화
             vid_to_files = {}
             for fpath in actual_sub_files:
                 vid_from_file = os.path.basename(fpath).split('.')[0]
@@ -518,7 +568,6 @@ if run_btn and playlist_url:
             final_sub_ext = output_format
             st.write(f"변환 완료: **{converted_count}개**")
 
-        # ★ 에러 요약
         if errors:
             st.write(f"⚠️ 실패: **{len(errors)}개** 영상")
 
@@ -626,7 +675,6 @@ if st.session_state.collected and st.session_state.df is not None:
                 st.dataframe(pd.DataFrame(errors))
         st.stop()
 
-    # metric 계산
     sub_text_cols = [c for c in df.columns if c.startswith('subtitle_text_')]
     if sub_text_cols:
         sub_count = df[sub_text_cols].apply(
