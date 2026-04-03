@@ -18,8 +18,202 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # 페이지 설정
 # ============================================================
 st.set_page_config(page_title="YT Playlist Scraper", layout="wide")
+
+# ============================================================
+# ★★★ 게이트키퍼 (인증 벽) ★★★
+# ============================================================
+def normalize_biz_number(raw: str) -> str:
+    """하이픈, 공백 제거 → 순수 숫자 10자리로 정규화"""
+    return re.sub(r"[^0-9]", "", raw.strip())
+
+def normalize_phone(raw: str) -> str:
+    """하이픈, 공백 제거 → 순수 숫자로 정규화"""
+    return re.sub(r"[^0-9]", "", raw.strip())
+
+def validate_biz_number(biz: str) -> bool:
+    """
+    한국 사업자등록번호 10자리 체크섬 검증
+    (국세청 공개 알고리즘)
+    """
+    digits = normalize_biz_number(biz)
+    if len(digits) != 10 or not digits.isdigit():
+        return False
+    
+    d = [int(c) for c in digits]
+    keys = [1, 3, 7, 1, 3, 7, 1, 3, 5]
+    
+    total = 0
+    for i in range(9):
+        total += d[i] * keys[i]
+    total += (d[8] * 5) // 10
+    
+    remainder = total % 10
+    check = (10 - remainder) % 10
+    
+    return check == d[9]
+
+def load_authorized_users():
+    """
+    Streamlit Secrets에서 인가 사용자 목록 로드.
+    secrets.toml이 없으면 하드코딩된 기본값 사용.
+    """
+    users = []
+    
+    try:
+        # Streamlit Secrets 방식
+        if hasattr(st, "secrets") and "authorized_users" in st.secrets:
+            for user in st.secrets["authorized_users"]:
+                users.append({
+                    "business_number": normalize_biz_number(user["business_number"]),
+                    "phone": normalize_phone(user["phone"]),
+                    "name": user.get("name", ""),
+                })
+            return users
+    except Exception:
+        pass
+    
+    # ── Secrets가 없을 때 폴백 (직접 수정) ──
+    # ⚠️ 실제 운영 시에는 Streamlit Secrets 사용을 강력 권장
+    fallback = [
+        {
+            "business_number": "1234567890",   # 123-45-67890
+            "phone": "0212345678",              # 02-1234-5678
+            "name": "테스트 업체",
+        },
+        # 필요 시 추가
+        # {
+        #     "business_number": "9876543210",
+        #     "phone": "01098765432",
+        #     "name": "두 번째 업체",
+        # },
+    ]
+    return fallback
+
+def authenticate(biz_input: str, phone_input: str) -> tuple[bool, str]:
+    """
+    입력값을 정규화 후 인가 목록과 대조.
+    Returns: (성공여부, 업체명 또는 에러메시지)
+    """
+    biz_norm = normalize_biz_number(biz_input)
+    phone_norm = normalize_phone(phone_input)
+    
+    # 1) 형식 검증
+    if not validate_biz_number(biz_norm):
+        return False, "유효하지 않은 사업자등록번호입니다. (10자리 / 체크섬 불일치)"
+    
+    if len(phone_norm) < 9 or len(phone_norm) > 12:
+        return False, "전화번호 형식이 올바르지 않습니다."
+    
+    # 2) 인가 목록 대조
+    users = load_authorized_users()
+    for user in users:
+        if user["business_number"] == biz_norm and user["phone"] == phone_norm:
+            return True, user.get("name", "인증됨")
+    
+    return False, "등록되지 않은 사업자등록번호 또는 전화번호입니다."
+
+def render_gatekeeper():
+    """로그인 화면 렌더링. 인증 성공 시 True, 아니면 False."""
+    
+    if st.session_state.get("authenticated"):
+        return True
+    
+    # ── 로그인 UI ──
+    st.title("YouTube Playlist Scraper")
+    
+    st.markdown(
+        """
+        <div style="
+            max-width: 480px;
+            margin: 2rem auto;
+            padding: 2rem;
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            background: #fafafa;
+        ">
+        <h3 style="text-align:center; margin-bottom:0.5rem;">🔐 접근 인증</h3>
+        <p style="text-align:center; color:#666; font-size:0.9rem;">
+            등록된 사업자등록번호와 대표 전화번호를 입력하세요.
+        </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    # 중앙 정렬을 위한 컬럼
+    _, col_center, _ = st.columns([1, 2, 1])
+    
+    with col_center:
+        with st.form("auth_form", clear_on_submit=False):
+            biz_input = st.text_input(
+                "사업자등록번호",
+                placeholder="000-00-00000",
+                help="하이픈 포함/미포함 모두 가능",
+                max_chars=13,
+            )
+            phone_input = st.text_input(
+                "대표 전화번호",
+                placeholder="02-0000-0000 또는 010-0000-0000",
+                help="하이픈 포함/미포함 모두 가능",
+                max_chars=15,
+            )
+            submitted = st.form_submit_button(
+                "인증하기", type="primary", use_container_width=True
+            )
+        
+        if submitted:
+            if not biz_input.strip() or not phone_input.strip():
+                st.error("모든 항목을 입력해주세요.")
+                return False
+            
+            success, message = authenticate(biz_input, phone_input)
+            
+            if success:
+                st.session_state.authenticated = True
+                st.session_state.auth_name = message
+                st.session_state.auth_biz = biz_input.strip()
+                st.rerun()
+            else:
+                # 실패 횟수 추적 (브루트포스 방어)
+                fail_count = st.session_state.get("auth_fail_count", 0) + 1
+                st.session_state.auth_fail_count = fail_count
+                
+                st.error(f"❌ {message}")
+                
+                if fail_count >= 5:
+                    st.warning(
+                        f"⚠️ {fail_count}회 연속 실패. "
+                        "반복 실패 시 접근이 제한될 수 있습니다."
+                    )
+                    # 선택: 일정 횟수 초과 시 강제 지연
+                    time.sleep(min(fail_count, 10))
+                
+                return False
+    
+    return False
+
+
+# ── 게이트키퍼 실행: 인증 실패 시 여기서 멈춤 ──
+if not render_gatekeeper():
+    st.stop()
+
+# ── 인증 후 상단 바 (로그아웃 버튼) ──
+auth_col1, auth_col2 = st.columns([6, 1])
+with auth_col1:
+    st.caption(f"🏢 {st.session_state.get('auth_name', '')} ({st.session_state.get('auth_biz', '')})")
+with auth_col2:
+    if st.button("로그아웃", type="secondary"):
+        for key in ["authenticated", "auth_name", "auth_biz", "auth_fail_count"]:
+            st.session_state.pop(key, None)
+        st.rerun()
+
+
+# ============================================================
+# ★★★ 여기서부터 기존 메인 앱 코드 (변경 없음) ★★★
+# ============================================================
 st.title("YouTube Playlist Scraper")
 st.caption("플레이리스트 URL → 메타데이터 + 자막 → Excel / CSV / 자막 파일")
+
 
 # ============================================================
 # 상수 & 경로
